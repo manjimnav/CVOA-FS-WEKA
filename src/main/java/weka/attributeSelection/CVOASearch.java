@@ -1,19 +1,13 @@
 package weka.attributeSelection;
 
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Enumeration;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Vector;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-
 import weka.core.Instances;
 import weka.core.Option;
 import weka.core.OptionHandler;
-import weka.core.Utils;
+import weka.core.Utils;		
 
 public class CVOASearch extends ASSearch implements OptionHandler {
 
@@ -44,7 +38,7 @@ public class CVOASearch extends ASSearch implements OptionHandler {
         long time = System.currentTimeMillis();
 //		Collection<CVOA> concurrentCVOAs = new LinkedList<>();
 //		concurrentCVOAs.add(new CVOA(numAttributes, ITERATIONS, "Strain #1", SEED, ASEvaluator));
-		CVOA searcher = new CVOA(numAttributes, ITERATIONS, "Strain #1", SEED, ASEvaluator, MAXIMIZATION);
+		CVOA searcher = new CVOA(numAttributes, ITERATIONS, "Strain #1", SEED, ASEvaluator, MAXIMIZATION, MAX_THREADS);
 
 //		List<Future<CVOAIndividual>> results = new LinkedList<Future<CVOAIndividual>>();
 		bestSolution = searcher.run();

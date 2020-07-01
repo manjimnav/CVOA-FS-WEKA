@@ -20,7 +20,13 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
+import org.javatuples.Pair;
 
 public class CVOA implements Callable<CVOAIndividual> {
 
@@ -39,6 +45,7 @@ public class CVOA implements Callable<CVOAIndividual> {
 	public static final DecimalFormat DF = new DecimalFormat("#.##");
 	protected ASEvaluation evaluator;
 	protected boolean isMaximization;
+	protected int maxThreads;
 
 	// Modify these values to simulate other pandemics
 	public int MIN_SPREAD = 0;
@@ -52,13 +59,11 @@ public class CVOA implements Callable<CVOAIndividual> {
 	public double SUPERSPREADER_PERC = 0.1;
 	public double DEATH_PERC = 0.15;
 
-	public CVOA(int size, int max_time, String id, int seed, ASEvaluation evaluator,
-			boolean maximization, int minSpread,int maxSpread,
-			int minSuperSpread, int maxSuperSpread, double pTravel, double pInfection, 
-			double superSpreaderPerc,
-			double deathPerc, double pIsolation, int socialDistancing) {
+	public CVOA(int size, int max_time, String id, int seed, ASEvaluation evaluator, boolean maximization, int maxTheads,
+			int minSpread, int maxSpread, int minSuperSpread, int maxSuperSpread, double pTravel, double pInfection,
+			double superSpreaderPerc, double deathPerc, double pIsolation, int socialDistancing) {
 
-		initializeCommon(size, max_time, id, seed, evaluator, maximization);
+		initializeCommon(size, max_time, id, seed, evaluator, maximization, maxTheads);
 
 		this.MIN_SPREAD = minSpread;
 		this.MAX_SPREAD = maxSpread;
@@ -72,12 +77,12 @@ public class CVOA implements Callable<CVOAIndividual> {
 		this.SOCIAL_DISTANCING = socialDistancing;
 	}
 
-	public CVOA(int size, int max_time, String id, int seed, ASEvaluation evaluator, 
-			boolean maximization) {
-		initializeCommon(size, max_time, id, seed, evaluator, maximization);
+	public CVOA(int size, int max_time, String id, int seed, ASEvaluation evaluator, boolean maximization, int maxTheads) {
+		initializeCommon(size, max_time, id, seed, evaluator, maximization, maxTheads);
 	}
 
-	private void initializeCommon(int size, int max_time, String id, int seed, ASEvaluation evaluator, boolean maximization) {
+	private void initializeCommon(int size, int max_time, String id, int seed, ASEvaluation evaluator,
+			boolean maximization, int maxTheads) {
 		infected = new LinkedList<CVOAIndividual>();
 		this.size = size;
 		this.seed = System.currentTimeMillis() + seed;
@@ -86,6 +91,7 @@ public class CVOA implements Callable<CVOAIndividual> {
 		this.strainID = id;
 		this.evaluator = evaluator;
 		this.isMaximization = maximization;
+		this.maxThreads = maxTheads;
 	}
 
 	public static void initializePandemic(CVOAIndividual best) {
@@ -135,31 +141,96 @@ public class CVOA implements Callable<CVOAIndividual> {
 
 		return bestSolutionStrain;
 	}
+	
+	public static <T> Stream<List<T>> batches(List<T> source, int length) {
+	    if (length <= 0)
+	        throw new IllegalArgumentException("length = " + length);
+	    int size = source.size();
+	    if (size <= 0)
+	        return Stream.empty();
+	    int fullChunks = (size - 1) / length;
+	    return IntStream.range(0, fullChunks + 1).mapToObj(
+	        n -> source.subList(n * length, n == fullChunks ? size : (n + 1) * length));
+	}
+
 
 	protected void propagateDisease() throws Exception {
-		int i, j, idx_super_spreader, idx_deaths, ninfected, travel_distance;
-		boolean traveler;
-		CVOAIndividual new_infected;
+		int idx_super_spreader, idx_deaths;
+
 		List<CVOAIndividual> new_infected_list = new LinkedList<>();
+		ExecutorService m_pool = Executors.newFixedThreadPool(this.maxThreads);
 
 		// Step 1. Assess fitness for each CvoaIndividual
 		// Step 2. Update best global and local (strain) solutions, if proceed.
-		for (CVOAIndividual x : infected) {
-			Double fitnessValue = fitness(x);
+//		infected =  infected.parallelStream().map(x -> {
+//			
+//			Double fitnessValue = null;
+//			try {
+//				fitnessValue = fitness(x);
+//			} catch (Exception e) {
+//				e.printStackTrace();
+//			}finally {
+//				if(isMaximization && fitnessValue == null) {
+//					fitnessValue = -Double.MAX_VALUE;
+//				}else if(!isMaximization && fitnessValue == null) {
+//					fitnessValue = Double.MAX_VALUE;
+//				}
+//				
+//			}
+//			
+//			x.setFitness(fitnessValue);
+//			return x;
+//		}).collect(Collectors.toList());
+		
+		List<Callable<CVOAIndividual>> concurrentEvaluations = new LinkedList<Callable<CVOAIndividual>>();
+		
+		infected.forEach(x->{
+			Callable<CVOAIndividual> future =new Callable<CVOAIndividual>() {
+				@Override
+				public CVOAIndividual call() throws Exception {
+						Double fitnessValue = null;
+						try {
+							fitnessValue = fitness(x);
+						} catch (Exception e) {
+							e.printStackTrace();
+						} finally {
+							if (isMaximization && fitnessValue == null) {
+								fitnessValue = -Double.MAX_VALUE;
+							} else if (!isMaximization && fitnessValue == null) {
+								fitnessValue = Double.MAX_VALUE;
+							}
+
+						}
+
+						x.setFitness(fitnessValue);
+					
+					return x;
+				}
+			};
 			
-			x.setFitness(fitnessValue);
+			concurrentEvaluations.add(future);
+			
+		});
+		List<Future<CVOAIndividual>> results = m_pool.invokeAll(concurrentEvaluations);
+
+		int z =0;
+		
+		for (Future<CVOAIndividual> newInd: results) {
+				infected.set(z, newInd.get());
+				z++;
+		}
+
+		for (CVOAIndividual x : infected) {
 			if (x.getFitness() < bestSolution.getFitness()) {
 				bestSolution = x;
-				// Uncomment if you do not want to miss bestSolution when cancelling an
-				// execution
-				// System.out.println("Best solution so far: " + bestSolution);
+
 			}
 
 			if (x.getFitness() < bestSolutionStrain.getFitness()) {
 				bestSolutionStrain = x;
 			}
-
 		}
+
 		// Step 3. Sort the infected list by fitness (ascendent).
 		Collections.sort(infected);
 
@@ -170,73 +241,86 @@ public class CVOA implements Callable<CVOAIndividual> {
 				: infected.size() - (int) Math.ceil(DEATH_PERC * infected.size());
 
 		// Step 5. Disease propagation.
-		i = 0;
-		for (CVOAIndividual x : infected) {
-			// Step 5.1 If the CvoaIndividual belongs to the death part, then die
-			if (i >= idx_deaths) {
-				deaths.add(x);
-			} else {
-				// Step 5.2 Determine the number of new infected CvoaIndividuals.
-				if (i < idx_super_spreader) { // This is the super-spreader!
-					ninfected = MIN_SUPERSPREAD + rnd.nextInt(MAX_SUPERSPREAD - MIN_SUPERSPREAD + 1);
-				} else {
-					ninfected = rnd.nextInt(MAX_SPREAD + 1);
-				}
+//		i = 0;
 
-				// Step 5.3 Determine whether the CvoaIndividual has traveled
-				traveler = rnd.nextDouble() < P_TRAVEL;
+		IntStream.range(0, infected.size()).mapToObj(i -> new Pair<CVOAIndividual, Integer>(infected.get(i), i))
+				.forEach(pair -> {
 
-				// Step 5.4 Determine the travel distance, which is how far is the new infected
-				// CvoaIndividual.
-				if (traveler) {
-					travel_distance = rnd.nextInt(size + 1);
-				} else {
-					travel_distance = 1;
-				}
+					CVOAIndividual x = pair.getValue0();
+					Integer idx = pair.getValue1();
+					int ninfected, travel_distance;
+					CVOAIndividual new_infected;
+					boolean traveler;
 
-				// Step 5.5 Infect
-				for (j = 0; j < ninfected; j++) {
-					new_infected = infect(x, travel_distance);
-
-					// Propagate with no social distancing measures
-					if (time < SOCIAL_DISTANCING) {
-						if (!deaths.contains(new_infected) && !recovered.contains(new_infected)
-								&& !new_infected_list.contains(new_infected) && !infected.contains(new_infected)) {
-							new_infected_list.add(new_infected);
-						} else if (recovered.contains(new_infected) && !new_infected_list.contains(new_infected)) {
-							if (rnd.nextDouble() < P_REINFECTION) {
-								new_infected_list.add(new_infected);
-								recovered.remove(new_infected);
-							}
+					// Step 5.1 If the CvoaIndividual belongs to the death part, then die
+					if (idx >= idx_deaths) {
+						deaths.add(x);
+					} else {
+						// Step 5.2 Determine the number of new infected CvoaIndividuals.
+						if (idx < idx_super_spreader) { // This is the super-spreader!
+							ninfected = MIN_SUPERSPREAD + rnd.nextInt(MAX_SUPERSPREAD - MIN_SUPERSPREAD + 1);
+						} else {
+							ninfected = rnd.nextInt(MAX_SPREAD + 1);
 						}
 
-					}
-					// After SOCIAL_DISTANCING iterations, there is a P_ISOLATION of not being
-					// infected
-					else {
-						if (rnd.nextDouble() > P_ISOLATION) {
-							if (!deaths.contains(new_infected) && !recovered.contains(new_infected)
-									&& !new_infected_list.contains(new_infected) && !infected.contains(new_infected)) {
-								new_infected_list.add(new_infected);
-							} else if (recovered.contains(new_infected) && !new_infected_list.contains(new_infected)) {
-								if (rnd.nextDouble() < P_REINFECTION) {
+						// Step 5.3 Determine whether the CvoaIndividual has traveled
+						traveler = rnd.nextDouble() < P_TRAVEL;
+
+						// Step 5.4 Determine the travel distance, which is how far is the new infected
+						// CvoaIndividual.
+						if (traveler) {
+							travel_distance = rnd.nextInt(size + 1);
+						} else {
+							travel_distance = 1;
+						}
+
+						// Step 5.5 Infect
+						for (int j = 0; j < ninfected; j++) {
+							new_infected = infect(x, travel_distance);
+
+							// Propagate with no social distancing measures
+							if (time < SOCIAL_DISTANCING) {
+								if (!deaths.contains(new_infected) && !recovered.contains(new_infected)
+										&& !new_infected_list.contains(new_infected)
+										&& !infected.contains(new_infected)) {
 									new_infected_list.add(new_infected);
-									recovered.remove(new_infected);
+								} else if (recovered.contains(new_infected)
+										&& !new_infected_list.contains(new_infected)) {
+									if (rnd.nextDouble() < P_REINFECTION) {
+										new_infected_list.add(new_infected);
+										recovered.remove(new_infected);
+									}
+								}
+
+							}
+							// After SOCIAL_DISTANCING iterations, there is a P_ISOLATION of not being
+							// infected
+							else {
+								if (rnd.nextDouble() > P_ISOLATION) {
+									if (!deaths.contains(new_infected) && !recovered.contains(new_infected)
+											&& !new_infected_list.contains(new_infected)
+											&& !infected.contains(new_infected)) {
+										new_infected_list.add(new_infected);
+									} else if (recovered.contains(new_infected)
+											&& !new_infected_list.contains(new_infected)) {
+										if (rnd.nextDouble() < P_REINFECTION) {
+											new_infected_list.add(new_infected);
+											recovered.remove(new_infected);
+										}
+									}
+								} else { // Those saved by social distancing are sent to the recovered list
+									if (!deaths.contains(new_infected) && !recovered.contains(new_infected)
+											&& !new_infected_list.contains(new_infected)
+											&& !infected.contains(new_infected)) {
+										recovered.add(new_infected);
+									}
 								}
 							}
-						} else { // Those saved by social distancing are sent to the recovered list
-							if (!deaths.contains(new_infected) && !recovered.contains(new_infected)
-									&& !new_infected_list.contains(new_infected) && !infected.contains(new_infected)) {
-								recovered.add(new_infected);
-							}
 						}
+						if (!deaths.contains(x) && !recovered.contains(x))
+							recovered.add(x);
 					}
-				}
-				if (!deaths.contains(x) && !recovered.contains(x))
-					recovered.add(x);
-			}
-			i++;
-		}
+				});
 
 		// Step 6. Update the infected list with the new infected CvoaIndividuals
 		// (shared by
@@ -264,7 +348,6 @@ public class CVOA implements Callable<CVOAIndividual> {
 		return new CVOAIndividual(res);
 	}
 
-	// Optimal reached at x = 15 (In binary: 11110000...)
 	public double fitness(CVOAIndividual individual) throws Exception {
 
 		BitSet selectedAttrs = individual.getGroup();
@@ -274,8 +357,8 @@ public class CVOA implements Callable<CVOAIndividual> {
 				: (SubsetEvaluator) ASEvaluation.makeCopies((ASEvaluation) this.evaluator, 1)[0];
 
 		double fitness = theEvaluator.evaluateSubset(selectedAttrs);
-		if(isMaximization) {
-			fitness =-fitness;
+		if (isMaximization) {
+			fitness = -fitness;
 		}
 		return fitness;
 	}
